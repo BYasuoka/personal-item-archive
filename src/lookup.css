@@ -1,0 +1,1 @@
+.lookup-state{display:none;margin:-8px 0 18px;padding:9px 11px;border-radius:9px;font-size:12px;line-height:1.35}.lookup-state.loading{display:block;background:#e7f0ec;color:#387266}.lookup-state.found{display:block;background:#e4f0e8;color:#276b55}.lookup-state.empty,.lookup-state.error{display:block;background:#f5ece4;color:#885637}

@@ -6,7 +6,7 @@ import { emptyProduct, type Product } from './types'
 
 type View = 'archive' | 'add' | 'settings'
 
-const categories = ['Food & drink', 'Home', 'Electronics', 'Beauty', 'Automotive', 'Other']
+const categories = ['Food & drink', 'Books', 'Home', 'Electronics', 'Beauty', 'Automotive', 'Other']
 
 function formatDate(date: string) { return new Intl.DateTimeFormat('en', { month: 'short', day: 'numeric' }).format(new Date(date)) }
 
@@ -19,6 +19,7 @@ export default function App() {
   const [detail, setDetail] = useState<Product | null>(null)
   const [scannerOpen, setScannerOpen] = useState(false)
   const [message, setMessage] = useState('')
+  const [lookupState, setLookupState] = useState<'idle' | 'loading' | 'found' | 'empty' | 'error'>('idle')
   const video = useRef<HTMLVideoElement>(null)
   const stream = useRef<MediaStream | null>(null)
 
@@ -32,7 +33,7 @@ export default function App() {
     const reader = new BrowserMultiFormatReader(hints, { delayBetweenScanAttempts: 180 })
     let controls: { stop: () => void } | undefined
     reader.decodeFromVideoElement(video.current, (result) => {
-      if (result) { update('barcode', result.getText()); controls?.stop(); stopCamera() }
+      if (result) { const barcode = result.getText(); update('barcode', barcode); lookupBarcode(barcode); controls?.stop(); stopCamera() }
     }).then(found => { controls = found }).catch(() => setMessage('Could not start the scanner. You can type the barcode below.'))
     return () => controls?.stop()
   }, [scannerOpen])
@@ -44,6 +45,54 @@ export default function App() {
 
   function update(field: keyof Product, value: string) { setDraft(current => ({ ...current, [field]: value })) }
   function beginAdd() { setDraft(emptyProduct()); setView('add') }
+
+  function applyLookup(data: Partial<Product>) {
+    setDraft(current => ({
+      ...current,
+      ...Object.fromEntries(Object.entries(data).filter(([, value]) => value !== undefined && value !== '')),
+      photos: current.photos.length ? current.photos : (data.photos || []),
+    }))
+    setLookupState('found')
+  }
+
+  async function lookupBarcode(rawBarcode = draft.barcode) {
+    const barcode = rawBarcode.replace(/[^0-9Xx]/g, '')
+    if (!barcode) { setMessage('Scan or enter a barcode first.'); return }
+    setLookupState('loading')
+    try {
+      if (/^(97[89])\d{10}$/.test(barcode) || /^(\d{9}[\dXx])$/.test(barcode)) {
+        const response = await fetch(`https://openlibrary.org/api/books?bibkeys=ISBN:${barcode}&format=json&jscmd=data`)
+        const books = await response.json() as Record<string, { title?: string; authors?: Array<{ name: string }>; publishers?: Array<{ name: string }>; cover?: { medium?: string } }>
+        const book = Object.values(books)[0]
+        if (book?.title) {
+          const authors = book.authors?.map(author => author.name).join(', ') || ''
+          const publisher = book.publishers?.map(item => item.name).join(', ') || ''
+          applyLookup({ name: book.title, brand: authors, category: 'Books', notes: [authors && `Author: ${authors}`, publisher && `Publisher: ${publisher}`].filter(Boolean).join('\n'), photos: book.cover?.medium ? [book.cover.medium] : [] })
+          return
+        }
+      }
+
+      const foodResponse = await fetch(`https://world.openfoodfacts.org/api/v2/product/${barcode}.json`)
+      const food = await foodResponse.json() as { status?: number; product?: { product_name?: string; brands?: string; categories?: string; image_front_url?: string; quantity?: string; nutriments?: Record<string, unknown> } }
+      if (food.status === 1 && food.product?.product_name) {
+        const nutrition = food.product.nutriments?.['nutrition-score-fr']
+        applyLookup({ name: food.product.product_name, brand: food.product.brands || '', category: 'Food & drink', notes: [food.product.categories, food.product.quantity, nutrition !== undefined && `Nutrition score: ${nutrition}`].filter(Boolean).join('\n'), photos: food.product.image_front_url ? [food.product.image_front_url] : [] })
+        return
+      }
+
+      const productResponse = await fetch(`https://api.upcitemdb.com/prod/trial/lookup?upc=${barcode}`)
+      const productResult = await productResponse.json() as { items?: Array<{ title?: string; brand?: string; category?: string; description?: string; images?: string[] }> }
+      const product = productResult.items?.[0]
+      if (product?.title) {
+        applyLookup({ name: product.title, brand: product.brand || '', category: categories.includes(product.category || '') ? product.category! : 'Other', notes: product.description || '', photos: product.images?.slice(0, 1) || [] })
+        return
+      }
+      setLookupState('empty')
+    } catch {
+      setLookupState('error')
+      setMessage('Could not look up that barcode. You can still save it manually.')
+    }
+  }
   async function save() {
     if (!draft.name.trim() && !draft.barcode.trim() && !draft.photos.length) { setMessage('Add a product name, barcode, or photo first.'); return }
     const existing = draft.barcode && products.find(p => p.barcode === draft.barcode && p.id !== draft.id)
@@ -63,7 +112,7 @@ export default function App() {
   function stopCamera() { stream.current?.getTracks().forEach(track => track.stop()); stream.current = null; setScannerOpen(false) }
   function captureBarcode() {
     const barcode = prompt('Enter the barcode shown in the camera view:')
-    if (barcode) update('barcode', barcode.trim())
+    if (barcode) { const value = barcode.trim(); update('barcode', value); lookupBarcode(value) }
     stopCamera()
   }
 
@@ -80,7 +129,8 @@ export default function App() {
     {view === 'add' && <section className="screen form-screen"><div className="back-row"><button className="text-button" onClick={() => setView('archive')}>‹ Back</button><b>New product</b><button className="save-top" onClick={save}>Save</button></div><div className="quick-actions"><button onClick={startCamera}><span>▥</span> Scan barcode</button><label><input type="file" accept="image/*" capture="environment" multiple onChange={addPhotos} /><span>◉</span> Take photo</label></div>
       <div className="field"><label>Product name</label><input autoFocus value={draft.name} onChange={e => update('name', e.target.value)} placeholder="What did you find?" /></div>
       <div className="split"><div className="field"><label>Brand</label><input value={draft.brand} onChange={e => update('brand', e.target.value)} placeholder="Optional" /></div><div className="field"><label>Category</label><select value={draft.category} onChange={e => update('category', e.target.value)}><option value="">Select</option>{categories.map(c => <option key={c}>{c}</option>)}</select></div></div>
-      <div className="field barcode-field"><label>Barcode</label><input inputMode="numeric" value={draft.barcode} onChange={e => update('barcode', e.target.value)} placeholder="Scan or type barcode" /><button onClick={startCamera}>Scan</button></div>
+      <div className="field barcode-field"><label>Barcode</label><input inputMode="numeric" value={draft.barcode} onChange={e => { update('barcode', e.target.value); setLookupState('idle') }} onBlur={() => lookupBarcode()} placeholder="Scan or type barcode" /><button onClick={startCamera}>Scan</button></div>
+      <div className={`lookup-state ${lookupState}`}>{lookupState === 'loading' && 'Looking up product information…'}{lookupState === 'found' && 'Product details added — review and edit anything you like.'}{lookupState === 'empty' && 'No matching product found. Add details manually.'}{lookupState === 'error' && 'Lookup unavailable. Add details manually or try again later.'}</div>
       <div className="split"><div className="field"><label>Store</label><input value={draft.store} onChange={e => update('store', e.target.value)} placeholder="Optional" /></div><div className="field"><label>Price</label><input inputMode="decimal" value={draft.price} onChange={e => update('price', e.target.value)} placeholder="$0.00" /></div></div>
       <div className="field"><label>Notes</label><textarea value={draft.notes} onChange={e => update('notes', e.target.value)} placeholder="Why is this worth remembering?" /></div>
       {draft.photos.length > 0 && <div className="photo-strip">{draft.photos.map((photo, i) => <div key={photo} className="draft-photo"><img src={photo} alt={`Product ${i + 1}`} /><button onClick={() => setDraft(d => ({ ...d, photos: d.photos.filter((_, index) => index !== i) }))}>×</button></div>)}</div>}
