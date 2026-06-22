@@ -5,7 +5,7 @@ import './styles.css'
 
 if ('serviceWorker' in navigator) {
   if (import.meta.env.PROD) {
-    window.addEventListener('load', () => navigator.serviceWorker.register('/sw.js'))
+    window.addEventListener('load', () => navigator.serviceWorker.register(`${import.meta.env.BASE_URL}sw.js`))
   } else {
     // A service worker should never cache Vite's changing development modules.
     navigator.serviceWorker.getRegistrations().then(registrations => registrations.forEach(registration => registration.unregister()))
