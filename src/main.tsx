@@ -3,6 +3,7 @@ import { createRoot } from 'react-dom/client'
 import App from './App'
 import './styles.css'
 import './lookup.css'
+import './edit.css'
 
 if ('serviceWorker' in navigator) {
   if (import.meta.env.PROD) {
