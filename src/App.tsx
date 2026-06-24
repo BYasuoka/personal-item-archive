@@ -1,17 +1,18 @@
 import { ChangeEvent, useEffect, useMemo, useRef, useState } from 'react'
 import { BrowserMultiFormatReader } from '@zxing/browser'
 import { BarcodeFormat, DecodeHintType } from '@zxing/library'
-import { deleteProduct, getProducts, putProduct } from './db'
+import { deleteProduct, getCategories, getProducts, putCategories, putProduct } from './db'
 import { emptyProduct, type Product } from './types'
 
 type View = 'archive' | 'add' | 'settings'
 
-const categories = ['Food & drink', 'Books', 'Home', 'Electronics', 'Beauty', 'Automotive', 'Other']
+const defaultCategories = ['Food & drink', 'Books', 'Home', 'Electronics', 'Beauty', 'Automotive', 'Other']
 
 function formatDate(date: string) { return new Intl.DateTimeFormat('en', { month: 'short', day: 'numeric' }).format(new Date(date)) }
 
 export default function App() {
   const [products, setProducts] = useState<Product[]>([])
+  const [categories, setCategories] = useState(defaultCategories)
   const [view, setView] = useState<View>('archive')
   const [draft, setDraft] = useState<Product>(emptyProduct)
   const [query, setQuery] = useState('')
@@ -20,10 +21,16 @@ export default function App() {
   const [scannerOpen, setScannerOpen] = useState(false)
   const [message, setMessage] = useState('')
   const [lookupState, setLookupState] = useState<'idle' | 'loading' | 'found' | 'empty' | 'error'>('idle')
+  const [newCategory, setNewCategory] = useState('')
+  const [editingCategory, setEditingCategory] = useState<string | null>(null)
+  const [categoryDraft, setCategoryDraft] = useState('')
   const video = useRef<HTMLVideoElement>(null)
   const stream = useRef<MediaStream | null>(null)
 
-  useEffect(() => { getProducts().then(setProducts) }, [])
+  useEffect(() => {
+    getProducts().then(setProducts)
+    getCategories().then(saved => { if (saved?.length) setCategories(saved) })
+  }, [])
   useEffect(() => () => stopCamera(), [])
   useEffect(() => {
     if (!scannerOpen || !video.current || !stream.current) return
@@ -46,6 +53,42 @@ export default function App() {
   function update(field: keyof Product, value: string) { setDraft(current => ({ ...current, [field]: value })) }
   function beginAdd() { setDraft(emptyProduct()); setLookupState('idle'); setView('add') }
   function beginEdit(product: Product) { setDraft({ ...product, photos: [...product.photos] }); setLookupState('idle'); setDetail(null); setView('add') }
+
+  async function updateCategoryList(next: string[]) { setCategories(next); await putCategories(next) }
+  async function addCategory() {
+    const name = newCategory.trim()
+    if (!name) return
+    if (categories.some(category => category.toLowerCase() === name.toLowerCase())) { setMessage('That category already exists.'); return }
+    await updateCategoryList([...categories, name]); setNewCategory('')
+  }
+  function startCategoryEdit(category: string) { setEditingCategory(category); setCategoryDraft(category) }
+  async function saveCategoryEdit(previous: string) {
+    const name = categoryDraft.trim()
+    if (!name) return
+    if (name !== previous && categories.some(category => category.toLowerCase() === name.toLowerCase())) { setMessage('That category already exists.'); return }
+    const next = categories.map(category => category === previous ? name : category)
+    await updateCategoryList(next)
+    if (name !== previous) {
+      const changed = products.map(product => product.category === previous ? { ...product, category: name } : product)
+      await Promise.all(changed.filter((product, index) => product.category !== products[index].category).map(putProduct))
+      setProducts(changed)
+      if (draft.category === previous) update('category', name)
+    }
+    setEditingCategory(null)
+  }
+  async function removeCategory(category: string) {
+    const inUse = products.some(product => product.category === category)
+    if (inUse && !confirm(`Remove “${category}”? Products in it will become uncategorized.`)) return
+    const next = categories.filter(item => item !== category)
+    await updateCategoryList(next)
+    if (inUse) {
+      const changed = products.map(product => product.category === category ? { ...product, category: '' } : product)
+      await Promise.all(changed.filter((product, index) => product.category !== products[index].category).map(putProduct))
+      setProducts(changed)
+    }
+    if (filter === category) setFilter('All')
+    if (draft.category === category) update('category', '')
+  }
 
   function applyLookup(data: Partial<Product>) {
     setDraft(current => ({
@@ -138,7 +181,7 @@ export default function App() {
       {draft.photos.length > 0 && <div className="photo-strip">{draft.photos.map((photo, i) => <div key={photo} className="draft-photo"><img src={photo} alt={`Product ${i + 1}`} /><button onClick={() => setDraft(d => ({ ...d, photos: d.photos.filter((_, index) => index !== i) }))}>×</button></div>)}</div>}
       <button className="primary wide save-bottom" onClick={save}>{products.some(product => product.id === draft.id) ? 'Save changes' : 'Save product'}</button>
     </section>}
-    {view === 'settings' && <section className="screen settings"><div className="back-row"><button className="text-button" onClick={() => setView('archive')}>‹ Back</button><b>Settings</b><span /></div><h1>Your archive</h1><div className="setting-card"><span className="sync-icon">↗</span><div><b>GitHub sync</b><p>Coming next: connect your repository to back up products and photos across devices.</p></div><span className="status">LOCAL ONLY</span></div><div className="setting-card"><span className="sync-icon">◌</span><div><b>Offline storage</b><p>{products.length} product{products.length === 1 ? '' : 's'} securely stored on this device.</p></div></div><p className="fine-print">Keep works offline. Install it from your browser’s Share or menu button for an app-like experience.</p></section>}
+    {view === 'settings' && <section className="screen settings"><div className="back-row"><button className="text-button" onClick={() => setView('archive')}>‹ Back</button><b>Settings</b><span /></div><h1>Your archive</h1><section className="categories-card"><div><p className="eyebrow">ORGANIZE YOUR ARCHIVE</p><h2>Categories</h2><p className="category-help">Create your own labels or edit the defaults. They appear everywhere you choose or filter a product category.</p></div><div className="category-list">{categories.map(category => editingCategory === category ? <form key={category} className="category-row category-edit" onSubmit={event => { event.preventDefault(); saveCategoryEdit(category) }}><input autoFocus value={categoryDraft} onChange={event => setCategoryDraft(event.target.value)} /><button className="mini-save">Save</button><button type="button" className="mini-cancel" onClick={() => setEditingCategory(null)}>Cancel</button></form> : <div key={category} className="category-row"><span>{category}</span><div><button onClick={() => startCategoryEdit(category)}>Edit</button><button className="category-delete" onClick={() => removeCategory(category)} aria-label={`Remove ${category}`}>×</button></div></div>)}</div><form className="add-category" onSubmit={event => { event.preventDefault(); addCategory() }}><input value={newCategory} onChange={event => setNewCategory(event.target.value)} placeholder="New category" /><button>Add</button></form></section><div className="setting-card"><span className="sync-icon">↗</span><div><b>GitHub sync</b><p>Coming next: connect your repository to back up products and photos across devices.</p></div><span className="status">LOCAL ONLY</span></div><div className="setting-card"><span className="sync-icon">◌</span><div><b>Offline storage</b><p>{products.length} product{products.length === 1 ? '' : 's'} securely stored on this device.</p></div></div><p className="fine-print">Keep works offline. Install it from your browser’s Share or menu button for an app-like experience.</p></section>}
     {scannerOpen && <div className="modal"><div className="scanner"><button className="close" onClick={stopCamera}>×</button><div className="scanner-view"><video ref={video} autoPlay playsInline /><div className="scan-frame"><div className="scan-line" /></div></div><h2>Point at the barcode</h2><p>Place the bars inside the box, with the numbers on the line.</p><button className="primary" onClick={captureBarcode}>Enter barcode</button></div></div>}
     {detail && <div className="modal"><article className="detail"><button className="close" onClick={() => setDetail(null)}>×</button><div className="detail-image">{detail.photos[0] ? <img src={detail.photos[0]} alt="" /> : <span>⌑</span>}</div><p className="eyebrow">{detail.category || 'PRODUCT'}</p><h1>{detail.name}</h1>{detail.brand && <p className="brand-line">{detail.brand}</p>}<dl>{detail.store && <><dt>Store</dt><dd>{detail.store}</dd></>}{detail.price && <><dt>Price</dt><dd>${detail.price}</dd></>}{detail.barcode && <><dt>Barcode</dt><dd>{detail.barcode}</dd></>}{detail.notes && <><dt>Notes</dt><dd>{detail.notes}</dd></>}</dl><div className="detail-actions"><button className="edit" onClick={() => beginEdit(detail)}>Edit product</button><button className="delete" onClick={() => remove(detail.id)}>Delete product</button></div></article></div>}
   </main>
