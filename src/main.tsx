@@ -5,6 +5,7 @@ import './styles.css'
 import './lookup.css'
 import './edit.css'
 import './scanner.css'
+import './categories.css'
 
 if ('serviceWorker' in navigator) {
   if (import.meta.env.PROD) {
